@@ -1903,8 +1903,94 @@ class MultiProviderAuth:
         if frozen.token:
             output["SessionToken"] = frozen.token
 
+        if self._should_recheck_quota():
+            email = self._resolve_passthrough_email(session)
+            if email:
+                quota_result = self._check_quota_passthrough(email)
+                self._save_quota_check_timestamp()
+                if not quota_result.get("allowed", True):
+                    return self._handle_quota_blocked(quota_result)
+                else:
+                    self._handle_quota_warning(quota_result)
+
         print(json.dumps(output))
         return 0
+
+    def _resolve_passthrough_email(self, session) -> str | None:
+        """Derive a user email from the ambient AWS identity for quota tracking.
+
+        Tries STS caller identity ARN, falling back to the assumed-role session name
+        which is typically set to the SSO user email by Identity Center.
+        """
+        try:
+            sts = session.client("sts")
+            identity = sts.get_caller_identity()
+            arn = identity.get("Arn", "")
+            self._debug_print(f"Passthrough caller identity: {arn}")
+
+            # assumed-role ARNs look like: arn:aws:sts::ACCT:assumed-role/RoleName/session-name
+            # Identity Center sets session-name to the user's email address
+            if ":assumed-role/" in arn:
+                session_name = arn.rsplit("/", 1)[-1]
+                if "@" in session_name:
+                    return session_name
+
+            # IAM user ARNs: arn:aws:iam::ACCT:user/username
+            if ":user/" in arn:
+                return arn.rsplit("/", 1)[-1]
+
+            # Fallback: use the full ARN as the identifier
+            return arn
+        except Exception as e:
+            self._debug_print(f"Could not resolve passthrough identity: {e}")
+            return None
+
+    def _check_quota_passthrough(self, email: str) -> dict:
+        """Check quota via query parameter (no JWT) for SSO-disabled deployments."""
+        quota_api_endpoint = self.config.get("quota_api_endpoint")
+        fail_mode = self.config.get("quota_fail_mode", "open")
+        timeout = self.config.get("quota_check_timeout", 5)
+
+        self._debug_print(f"Passthrough quota check for {email}")
+
+        try:
+            response = requests.get(
+                f"{quota_api_endpoint}/check",
+                params={"email": email},
+                timeout=timeout
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                self._debug_print(f"Quota check result: allowed={result.get('allowed')}, reason={result.get('reason')}")
+                return result
+            else:
+                self._debug_print(f"Quota check returned status {response.status_code}")
+                if fail_mode == "closed":
+                    return {
+                        "allowed": False,
+                        "reason": "api_error",
+                        "message": f"Quota check failed with status {response.status_code}"
+                    }
+                return {"allowed": True, "reason": "api_error"}
+
+        except requests.exceptions.Timeout:
+            self._debug_print("Quota check timed out")
+            if fail_mode == "closed":
+                return {"allowed": False, "reason": "timeout", "message": "Quota check timed out."}
+            return {"allowed": True, "reason": "timeout"}
+
+        except requests.exceptions.RequestException as e:
+            self._debug_print(f"Quota check request failed: {e}")
+            if fail_mode == "closed":
+                return {"allowed": False, "reason": "connection_error", "message": f"Could not connect to quota service: {e}"}
+            return {"allowed": True, "reason": "connection_error"}
+
+        except Exception as e:
+            self._debug_print(f"Quota check error: {e}")
+            if fail_mode == "closed":
+                return {"allowed": False, "reason": "error", "message": f"Quota check failed: {e}"}
+            return {"allowed": True, "reason": "error"}
 
     def run(self):
         """Main execution flow"""

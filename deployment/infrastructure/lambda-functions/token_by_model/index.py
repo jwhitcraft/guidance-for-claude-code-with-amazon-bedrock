@@ -4,6 +4,7 @@
 import json
 import boto3
 import os
+import re
 import sys
 from collections import defaultdict
 from boto3.dynamodb.conditions import Key
@@ -13,6 +14,54 @@ from query_utils import validate_time_range
 from widget_utils import parse_widget_context, get_time_range_iso, check_describe_mode
 from html_utils import generate_error_html
 from format_utils import format_number, format_percentage
+
+
+# Cache resolved application inference profile -> foundation model across warm invocations.
+_inference_profile_cache = {}
+
+_APPLICATION_PROFILE_ARN_RE = re.compile(
+    r"^arn:aws:bedrock:(?P<region>[^:]+):[^:]*:application-inference-profile/[^/]+$"
+)
+
+_FOUNDATION_MODEL_ARN_RE = re.compile(
+    r"^arn:aws:bedrock:[^:]*:[^:]*:foundation-model/(?P<model>.+)$"
+)
+
+
+def resolve_model_id(model_id):
+    """Resolve an application-inference-profile ARN to its underlying foundation model ID.
+
+    Returns the original model_id if it is not an application profile ARN or if the
+    lookup fails for any reason.
+    """
+    if not model_id:
+        return model_id
+
+    match = _APPLICATION_PROFILE_ARN_RE.match(model_id)
+    if not match:
+        return model_id
+
+    if model_id in _inference_profile_cache:
+        return _inference_profile_cache[model_id]
+
+    region = match.group("region")
+    try:
+        bedrock = boto3.client("bedrock", region_name=region)
+        profile = bedrock.get_inference_profile(inferenceProfileIdentifier=model_id)
+        for model in profile.get("models", []):
+            model_arn = model.get("modelArn", "")
+            fm_match = _FOUNDATION_MODEL_ARN_RE.match(model_arn)
+            if fm_match:
+                resolved = fm_match.group("model")
+                _inference_profile_cache[model_id] = resolved
+                return resolved
+        print(f"No foundation model found in inference profile {model_id}")
+    except Exception as e:
+        print(f"Failed to resolve inference profile {model_id}: {str(e)}")
+
+    # Cache the failure too so we don't retry on every bar within a single invocation.
+    _inference_profile_cache[model_id] = model_id
+    return model_id
 
 
 def get_model_display_name(model_id):
@@ -165,11 +214,21 @@ def lambda_handler(event, context):
         except Exception as e:
             print(f"Error querying model data: {str(e)}")
         
+        # Resolve ARNs to foundation models, then collapse to display names so that
+        # regional variants (us./eu./apac.) and per-user inference profiles all roll
+        # up into a single Claude family bar.
+        display_totals = defaultdict(float)
+        for model_id, total_tokens in model_totals.items():
+            if total_tokens <= 0:
+                continue
+            resolved_id = resolve_model_id(model_id)
+            display_name = get_model_display_name(resolved_id)
+            display_totals[display_name] += total_tokens
+
         # Convert to list and sort by usage
         model_data = []
-        for model_id, total_tokens in model_totals.items():
+        for display_name, total_tokens in display_totals.items():
             if total_tokens > 0:
-                display_name = get_model_display_name(model_id)
                 model_data.append({
                     'name': display_name,
                     'tokens': total_tokens,

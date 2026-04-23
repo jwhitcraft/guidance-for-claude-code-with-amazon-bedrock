@@ -161,6 +161,14 @@ Resources:
                 Resource:
                   - !GetAtt MetricsTable.Arn
                   - !Sub '${MetricsTable.Arn}/index/*'
+        - PolicyName: BedrockInferenceProfileRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:GetInferenceProfile
+                Resource: '*'
 
   MetricsAggregatorRole:
     Type: AWS::IAM::Role

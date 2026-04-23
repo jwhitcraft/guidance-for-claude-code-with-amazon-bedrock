@@ -65,15 +65,20 @@ def lambda_handler(event, context):
         groups = extract_groups_from_claims(jwt_claims)
 
         if not email:
-            # JWT is valid but missing email claim
-            # Security: Default to fail-closed (block) unless explicitly configured to allow
-            print(f"JWT missing email claim. Available claims: {list(jwt_claims.keys())}")
+            # No JWT email — check query string parameter (used by SSO-disabled deployments
+            # where the credential provider passes the caller identity directly).
+            query_params = event.get("queryStringParameters") or {}
+            email = query_params.get("email")
+
+        if not email:
+            # Neither JWT nor query param provided an email
+            print(f"No email from JWT or query params. JWT claims: {list(jwt_claims.keys())}")
             allow_missing_email = MISSING_EMAIL_ENFORCEMENT != "block"
             return build_response(200, {
-                "error": "No email claim in JWT token",
+                "error": "No email in request",
                 "allowed": allow_missing_email,
                 "reason": "missing_email_claim",
-                "message": "JWT token does not contain email claim" + (" - quota check skipped" if allow_missing_email else " - access denied for security")
+                "message": "No user identity provided" + (" - quota check skipped" if allow_missing_email else " - access denied for security")
             })
 
         # 1. Resolve the effective quota policy for this user

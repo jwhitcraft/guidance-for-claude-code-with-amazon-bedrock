@@ -23,12 +23,16 @@ def get_model_display_name(model_id):
     # Detect model family and version
     model_lower = model_display.lower()
     
-    if "opus-4-6" in model_lower or "opus-4.6" in model_lower:
+    if "opus-4-7" in model_lower or "opus-4.7" in model_lower:
+        return "Opus 4.7"
+    elif "opus-4-6" in model_lower or "opus-4.6" in model_lower:
         return "Opus 4.6"
     elif "opus-4-1" in model_lower or "opus-4.1" in model_lower:
         return "Opus 4.1"
     elif "opus-4" in model_lower:
         return "Opus 4"
+    elif "sonnet-4-6" in model_lower or "sonnet-4.6" in model_lower:
+        return "Sonnet 4.6"
     elif "sonnet-4-5" in model_lower or "sonnet-4.5" in model_lower:
         return "Sonnet 4.5"
     elif "sonnet-4" in model_lower:
@@ -55,10 +59,12 @@ def get_model_display_name(model_id):
 def get_model_color(model_name):
     """Get color for model based on family."""
     colors = {
+        "Opus 4.7": "#0d9488",  # Dark teal
         "Opus 4.6": "#14b8a6",  # Teal
         "Opus 4.1": "#3b82f6",  # Blue
         "Opus 4": "#f97316",    # Orange
         "Opus": "#8b5cf6",      # Purple
+        "Sonnet 4.6": "#7c3aed", # Violet
         "Sonnet 4.5": "#a855f7", # Purple variant
         "Sonnet 4": "#10b981",  # Green
         "Sonnet 3.7": "#ef4444", # Red

@@ -116,12 +116,15 @@ class MultiProviderAuth:
     def _auto_detect_profile(self):
         """Auto-detect profile name from config.json when only one profile exists."""
         try:
-            from claude_code_with_bedrock.config_paths import resolve_config_path
+            try:
+                from claude_code_with_bedrock.config_paths import resolve_config_path
+            except ImportError:
+                return None
 
             binary_dir = Path(__file__).parent if not getattr(sys, "frozen", False) else Path(sys.executable).parent
             try:
                 config_path = resolve_config_path(binary_dir=binary_dir)
-            except (FileNotFoundError, ImportError):
+            except FileNotFoundError:
                 return None
 
             with open(config_path) as f:
@@ -157,7 +160,9 @@ class MultiProviderAuth:
         try:
             from claude_code_with_bedrock.config_paths import resolve_config_path
         except ImportError as e:
-            raise ValueError(f"Cannot load config path resolver: {e}") from e
+            raise ImportError(
+                f"claude_code_with_bedrock package is not installed or not on sys.path: {e}"
+            ) from e
 
         binary_dir = Path(__file__).parent if not getattr(sys, "frozen", False) else Path(sys.executable).parent
         config_path = resolve_config_path(binary_dir=binary_dir)

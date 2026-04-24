@@ -116,15 +116,12 @@ class MultiProviderAuth:
     def _auto_detect_profile(self):
         """Auto-detect profile name from config.json when only one profile exists."""
         try:
-            # Try same directory as binary first (for testing)
+            from claude_code_with_bedrock.config_paths import resolve_config_path
+
             binary_dir = Path(__file__).parent if not getattr(sys, "frozen", False) else Path(sys.executable).parent
-            config_path = binary_dir / "config.json"
-
-            # Fall back to installed location
-            if not config_path.exists():
-                config_path = Path.home() / "claude-code-with-bedrock" / "config.json"
-
-            if not config_path.exists():
+            try:
+                config_path = resolve_config_path(binary_dir=binary_dir)
+            except (FileNotFoundError, ImportError):
                 return None
 
             with open(config_path) as f:
@@ -152,21 +149,15 @@ class MultiProviderAuth:
         """Load configuration from config.json.
 
         Priority:
-        1. Same directory as the binary (for testing dist/ packages)
-        2. ~/claude-code-with-bedrock/config.json (for installed packages)
+        1. $CCWB_CONFIG env var (explicit override)
+        2. ~/.ccwb/config.json (standard location)
+        3. <binary_dir>/config.json (bundled distribution)
+        4. ~/claude-code-with-bedrock/config.json (legacy)
         """
-        # Try same directory as binary first (for testing)
+        from claude_code_with_bedrock.config_paths import resolve_config_path
+
         binary_dir = Path(__file__).parent if not getattr(sys, "frozen", False) else Path(sys.executable).parent
-        config_path = binary_dir / "config.json"
-
-        # Fall back to installed location
-        if not config_path.exists():
-            config_path = Path.home() / "claude-code-with-bedrock" / "config.json"
-
-        if not config_path.exists():
-            raise ValueError(
-                f"Configuration file not found in {binary_dir} or {Path.home() / 'claude-code-with-bedrock'}"
-            )
+        config_path = resolve_config_path(binary_dir=binary_dir)
 
         with open(config_path) as f:
             file_config = json.load(f)

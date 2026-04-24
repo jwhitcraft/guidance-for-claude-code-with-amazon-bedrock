@@ -300,17 +300,20 @@ def get_token_via_credential_process():
     """Get monitoring token via credential-process to avoid direct keychain access"""
     logger.info("Getting token via credential-process...")
 
-    # Path to credential process - add .exe extension on Windows
-    import platform
+    try:
+        from claude_code_with_bedrock.config_paths import resolve_credential_process_binary
+        credential_process = resolve_credential_process_binary()
+    except ImportError:
+        import platform
+        import shutil
+        credential_process = shutil.which("credential-process")
+        if not credential_process:
+            ext = ".exe" if platform.system() == "Windows" else ""
+            legacy = os.path.expanduser(f"~/claude-code-with-bedrock/credential-process{ext}")
+            credential_process = legacy if os.path.exists(legacy) else None
 
-    if platform.system() == "Windows":
-        credential_process = os.path.expanduser("~/claude-code-with-bedrock/credential-process.exe")
-    else:
-        credential_process = os.path.expanduser("~/claude-code-with-bedrock/credential-process")
-
-    # Check if credential process exists
-    if not os.path.exists(credential_process):
-        logger.warning(f"Credential process not found at {credential_process}")
+    if not credential_process:
+        logger.warning("Credential process not found on $PATH or in ~/claude-code-with-bedrock/")
         return None
 
     # Get profile name from AWS_PROFILE environment variable (set by Claude Code from settings.json)

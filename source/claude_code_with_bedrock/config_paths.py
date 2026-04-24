@@ -17,7 +17,7 @@ def resolve_config_path(binary_dir: Path | None = None) -> Path:
     env_path = os.environ.get("CCWB_CONFIG")
     if env_path:
         p = Path(env_path)
-        if not p.exists():
+        if not p.is_file():
             raise FileNotFoundError(
                 f"CCWB_CONFIG points to {env_path} but the file does not exist"
             )
@@ -42,7 +42,7 @@ def resolve_config_path(binary_dir: Path | None = None) -> Path:
     if binary_dir is not None:
         searched.append(f"{binary_dir}/config.json")
     searched.append("~/claude-code-with-bedrock/config.json")
-    raise ValueError(
+    raise FileNotFoundError(
         f"Configuration file not found. Searched: {', '.join(searched)}"
     )
 

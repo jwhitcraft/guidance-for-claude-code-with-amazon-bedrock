@@ -66,7 +66,7 @@ class TestResolveConfigPath:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CCWB_CONFIG", None)
             with patch("claude_code_with_bedrock.config_paths.Path.home", return_value=fake_home):
-                with pytest.raises(ValueError, match="Configuration file not found"):
+                with pytest.raises(FileNotFoundError, match="Configuration file not found"):
                     resolve_config_path()
 
 

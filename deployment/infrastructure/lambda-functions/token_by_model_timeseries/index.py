@@ -1,5 +1,5 @@
 # ABOUTME: Lambda function to display token usage by model over time as a stacked bar chart
-# ABOUTME: Reads MODEL_RATE data from DynamoDB, resolving any legacy ARNs at read time
+# ABOUTME: Reads MODEL_RATE data from DynamoDB, resolving ARNs via Bedrock ListFoundationModels
 
 import re
 import boto3
@@ -43,6 +43,7 @@ FALLBACK_COLORS = [
 # --- Inference profile resolution for legacy DynamoDB items ---
 
 _inference_profile_cache = {}
+_display_name_cache = {}
 
 _APPLICATION_PROFILE_ARN_RE = re.compile(
     r"^arn:aws:bedrock:(?P<region>[^:]+):[^:]*:application-inference-profile/[^/]+$"
@@ -51,6 +52,24 @@ _APPLICATION_PROFILE_ARN_RE = re.compile(
 _FOUNDATION_MODEL_ARN_RE = re.compile(
     r"^arn:aws:bedrock:[^:]*:[^:]*:foundation-model/(?P<model>.+)$"
 )
+
+
+def _load_display_name_cache(region):
+    """Populate _display_name_cache from Bedrock ListFoundationModels (called once per cold start)."""
+    if _display_name_cache:
+        return
+    try:
+        bedrock = boto3.client("bedrock", region_name=region)
+        response = bedrock.list_foundation_models(byProvider="Anthropic")
+        for model in response.get("modelSummaries", []):
+            model_id = model.get("modelId", "")
+            model_name = model.get("modelName", "")
+            if model_id and model_name:
+                display = re.sub(r"(?i)^claude\s+", "", model_name).strip()
+                _display_name_cache[model_id] = display
+        print(f"Loaded {len(_display_name_cache)} Anthropic model display names from Bedrock")
+    except Exception as e:
+        print(f"Failed to load foundation model names: {e}")
 
 
 def resolve_model_id(model_id):
@@ -83,45 +102,31 @@ def resolve_model_id(model_id):
     return model_id
 
 
-def get_display_name(model_id):
-    """Convert a model ID (or already-resolved display name) to a short display name."""
-    display = model_id.replace("us.anthropic.", "").replace("eu.anthropic.", "").replace("apac.anthropic.", "").replace("anthropic.", "")
-    lower = display.lower()
+def get_display_name(model_id, region=None):
+    """Look up display name from Bedrock's ListFoundationModels cache."""
+    if region:
+        _load_display_name_cache(region)
 
-    for pattern, name in [
-        ("opus-4-7", "Opus 4.7"), ("opus-4.7", "Opus 4.7"),
-        ("opus-4-6", "Opus 4.6"), ("opus-4.6", "Opus 4.6"),
-        ("opus-4-5", "Opus 4.5"), ("opus-4.5", "Opus 4.5"),
-        ("opus-4-1", "Opus 4.1"), ("opus-4.1", "Opus 4.1"),
-        ("opus-4", "Opus 4"),
-        ("sonnet-4-6", "Sonnet 4.6"), ("sonnet-4.6", "Sonnet 4.6"),
-        ("sonnet-4-5", "Sonnet 4.5"), ("sonnet-4.5", "Sonnet 4.5"),
-        ("sonnet-4", "Sonnet 4"),
-        ("sonnet-3.7", "Sonnet 3.7"), ("sonnet-3-7", "Sonnet 3.7"),
-        ("sonnet-3.5", "Sonnet 3.5"), ("sonnet-3-5", "Sonnet 3.5"),
-        ("haiku-4-5", "Haiku 4.5"), ("haiku-4.5", "Haiku 4.5"),
-        ("haiku-4", "Haiku 4"),
-        ("haiku-3.5", "Haiku 3.5"), ("haiku-3-5", "Haiku 3.5"),
-        ("haiku-3", "Haiku 3.0"),
-    ]:
-        if pattern in lower:
-            return name
+    if model_id in _display_name_cache:
+        return _display_name_cache[model_id]
 
-    for family in ["opus", "sonnet", "haiku"]:
-        if family in lower:
-            return family.capitalize()
+    stripped = re.sub(r"^(us|eu|apac)\.", "", model_id)
+    if stripped in _display_name_cache:
+        return _display_name_cache[stripped]
 
-    # Already a display name like "Opus 4.5" — return as-is
     if model_id in MODEL_COLORS:
         return model_id
 
-    return display.split("-")[0].capitalize()
+    display = model_id
+    for prefix in ["us.anthropic.", "eu.anthropic.", "apac.anthropic.", "anthropic."]:
+        display = display.replace(prefix, "")
+    return display
 
 
-def normalize_model_name(raw_name):
+def normalize_model_name(raw_name, region=None):
     """Resolve ARN if needed, then map to display name. Handles both old and new data."""
     resolved = resolve_model_id(raw_name)
-    return get_display_name(resolved)
+    return get_display_name(resolved, region=region)
 
 
 def get_color(model_name, idx):
@@ -181,7 +186,7 @@ def lambda_handler(event, context):
 
         for item in all_items:
             raw_model = item.get('model', 'Unknown')
-            model_name = normalize_model_name(raw_model)
+            model_name = normalize_model_name(raw_model, region=region)
             tokens = float(item.get('tpm', Decimal(0)))
             ts_str = item.get('timestamp', '')
 

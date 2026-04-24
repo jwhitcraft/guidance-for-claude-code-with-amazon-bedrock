@@ -1,5 +1,5 @@
 # ABOUTME: Lambda function to display token usage by model
-# ABOUTME: Queries DynamoDB using single-partition schema for accurate time-based filtering
+# ABOUTME: Queries DynamoDB, resolving model IDs via Bedrock ListFoundationModels for display names
 
 import json
 import boto3
@@ -18,6 +18,7 @@ from format_utils import format_number, format_percentage
 
 # Cache resolved application inference profile -> foundation model across warm invocations.
 _inference_profile_cache = {}
+_display_name_cache = {}
 
 _APPLICATION_PROFILE_ARN_RE = re.compile(
     r"^arn:aws:bedrock:(?P<region>[^:]+):[^:]*:application-inference-profile/[^/]+$"
@@ -28,12 +29,26 @@ _FOUNDATION_MODEL_ARN_RE = re.compile(
 )
 
 
-def resolve_model_id(model_id):
-    """Resolve an application-inference-profile ARN to its underlying foundation model ID.
+def _load_display_name_cache(region):
+    """Populate _display_name_cache from Bedrock ListFoundationModels (called once per cold start)."""
+    if _display_name_cache:
+        return
+    try:
+        bedrock = boto3.client("bedrock", region_name=region)
+        response = bedrock.list_foundation_models(byProvider="Anthropic")
+        for model in response.get("modelSummaries", []):
+            model_id = model.get("modelId", "")
+            model_name = model.get("modelName", "")
+            if model_id and model_name:
+                display = re.sub(r"(?i)^claude\s+", "", model_name).strip()
+                _display_name_cache[model_id] = display
+        print(f"Loaded {len(_display_name_cache)} Anthropic model display names from Bedrock")
+    except Exception as e:
+        print(f"Failed to load foundation model names: {e}")
 
-    Returns the original model_id if it is not an application profile ARN or if the
-    lookup fails for any reason.
-    """
+
+def resolve_model_id(model_id):
+    """Resolve an application-inference-profile ARN to its underlying foundation model ID."""
     if not model_id:
         return model_id
 
@@ -59,56 +74,26 @@ def resolve_model_id(model_id):
     except Exception as e:
         print(f"Failed to resolve inference profile {model_id}: {str(e)}")
 
-    # Cache the failure too so we don't retry on every bar within a single invocation.
     _inference_profile_cache[model_id] = model_id
     return model_id
 
 
-def get_model_display_name(model_id):
-    """Convert model ID to display name."""
-    # Remove common prefixes
-    model_display = model_id.replace("us.anthropic.", "").replace("eu.anthropic.", "").replace("apac.anthropic.", "").replace("anthropic.", "")
-    
-    # Detect model family and version
-    model_lower = model_display.lower()
-    
-    if "opus-4-7" in model_lower or "opus-4.7" in model_lower:
-        return "Opus 4.7"
-    elif "opus-4-6" in model_lower or "opus-4.6" in model_lower:
-        return "Opus 4.6"
-    elif "opus-4-5" in model_lower or "opus-4.5" in model_lower:
-        return "Opus 4.5"
-    elif "opus-4-1" in model_lower or "opus-4.1" in model_lower:
-        return "Opus 4.1"
-    elif "opus-4" in model_lower:
-        return "Opus 4"
-    elif "sonnet-4-6" in model_lower or "sonnet-4.6" in model_lower:
-        return "Sonnet 4.6"
-    elif "sonnet-4-5" in model_lower or "sonnet-4.5" in model_lower:
-        return "Sonnet 4.5"
-    elif "sonnet-4" in model_lower:
-        return "Sonnet 4"
-    elif "sonnet-3.7" in model_lower or "sonnet-3-7" in model_lower:
-        return "Sonnet 3.7"
-    elif "sonnet-3.5" in model_lower or "sonnet-3-5" in model_lower:
-        return "Sonnet 3.5"
-    elif "haiku-4-5" in model_lower or "haiku-4.5" in model_lower:
-        return "Haiku 4.5"
-    elif "haiku-4" in model_lower:
-        return "Haiku 4"
-    elif "haiku-3.5" in model_lower or "haiku-3-5" in model_lower:
-        return "Haiku 3.5"
-    elif "haiku-3" in model_lower or "haiku-3.0" in model_lower:
-        return "Haiku 3.0"
-    elif "opus" in model_lower:
-        return "Opus"
-    elif "sonnet" in model_lower:
-        return "Sonnet"
-    elif "haiku" in model_lower:
-        return "Haiku"
-    else:
-        # Return shortened version if no match
-        return model_display.split('-')[0].capitalize()
+def get_model_display_name(model_id, region=None):
+    """Look up display name from Bedrock's ListFoundationModels cache."""
+    if region:
+        _load_display_name_cache(region)
+
+    if model_id in _display_name_cache:
+        return _display_name_cache[model_id]
+
+    stripped = re.sub(r"^(us|eu|apac)\.", "", model_id)
+    if stripped in _display_name_cache:
+        return _display_name_cache[stripped]
+
+    display = model_id
+    for prefix in ["us.anthropic.", "eu.anthropic.", "apac.anthropic.", "anthropic."]:
+        display = display.replace(prefix, "")
+    return display
 
 
 def get_model_color(model_name):
@@ -225,7 +210,7 @@ def lambda_handler(event, context):
             if total_tokens <= 0:
                 continue
             resolved_id = resolve_model_id(model_id)
-            display_name = get_model_display_name(resolved_id)
+            display_name = get_model_display_name(resolved_id, region=metrics_region)
             display_totals[display_name] += total_tokens
 
         # Convert to list and sort by usage

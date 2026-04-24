@@ -1,4 +1,4 @@
-# ABOUTME: Lambda function to display token usage by model over time as a stacked bar chart
+# ABOUTME: Lambda function to display token usage by model over time as a stacked area chart
 # ABOUTME: Reads MODEL_RATE data from DynamoDB, resolving ARNs via Bedrock ListFoundationModels
 
 import re
@@ -135,7 +135,7 @@ def get_color(model_name, idx):
 
 def lambda_handler(event, context):
     if check_describe_mode(event):
-        return {"markdown": "# Token Usage by Model Over Time\nStacked bar chart of token consumption by model"}
+        return {"markdown": "# Token Usage by Model Over Time\nStacked area chart of token consumption by model"}
 
     region = os.environ["METRICS_REGION"]
     metrics_table_name = os.environ.get("METRICS_TABLE", "ClaudeCodeMetrics")
@@ -230,11 +230,8 @@ def lambda_handler(event, context):
         margin_left = 55
         margin_top = 5
         margin_bottom = 30
-        legend_height = 24
 
         num_buckets = len(sorted_buckets)
-        bar_gap = 1
-        bar_width = max((chart_width - num_buckets * bar_gap) / max(num_buckets, 1), 3)
 
         # Find max stacked total for Y-axis scaling
         max_total = 0
@@ -245,36 +242,55 @@ def lambda_handler(event, context):
         if max_total == 0:
             max_total = 1
 
-        # Build SVG stacked bars
-        bars_svg = ""
-        for i, bucket in enumerate(sorted_buckets):
-            x = margin_left + i * (bar_width + bar_gap)
-            y_offset = 0
+        def x_for(i):
+            return margin_left + (i / max(num_buckets - 1, 1)) * chart_width
 
-            for j, model in enumerate(reversed(sorted_models)):
-                tokens = model_buckets[bucket].get(model, 0)
-                if tokens <= 0:
-                    continue
+        def y_for(val):
+            return margin_top + chart_height - (val / max_total) * chart_height
 
-                bar_h = (tokens / max_total) * chart_height
-                y = margin_top + chart_height - y_offset - bar_h
-                color = get_color(model, len(sorted_models) - 1 - j)
+        baseline_y = margin_top + chart_height
 
-                bars_svg += (
-                    f'<rect x="{x:.1f}" y="{y:.1f}" '
-                    f'width="{bar_width:.1f}" height="{bar_h:.1f}" '
-                    f'fill="{color}" opacity="0.85">'
-                    f'<title>{model}: {format_number(tokens)} tokens</title>'
-                    f'</rect>\n'
-                )
-                y_offset += bar_h
+        # Pre-compute stacked Y values per bucket
+        # Stack order: reversed sorted_models (lowest-usage on bottom)
+        stack_order = list(reversed(sorted_models))
+        cumulative = [[0.0] * num_buckets for _ in stack_order]
+        for layer_idx, model in enumerate(stack_order):
+            for bi, bucket in enumerate(sorted_buckets):
+                below = cumulative[layer_idx - 1][bi] if layer_idx > 0 else 0.0
+                cumulative[layer_idx][bi] = below + model_buckets[bucket].get(model, 0)
+
+        # Build SVG stacked area paths (bottom-up, so earlier layers render behind)
+        areas_svg = ""
+        for layer_idx, model in enumerate(stack_order):
+            color = get_color(model, len(stack_order) - 1 - layer_idx)
+
+            top_points = []
+            bottom_points = []
+            for bi in range(num_buckets):
+                px = x_for(bi)
+                top_val = cumulative[layer_idx][bi]
+                bot_val = cumulative[layer_idx - 1][bi] if layer_idx > 0 else 0.0
+                top_points.append(f"{px:.1f},{y_for(top_val):.1f}")
+                bottom_points.append(f"{px:.1f},{y_for(bot_val):.1f}")
+
+            top_path = " L".join(top_points)
+            bottom_path = " L".join(reversed(bottom_points))
+            areas_svg += (
+                f'<path d="M{top_path} L{bottom_path} Z" '
+                f'fill="{color}" opacity="0.75"/>\n'
+            )
+            # Stroke line on top edge for definition
+            areas_svg += (
+                f'<path d="M{top_path}" '
+                f'fill="none" stroke="{color}" stroke-width="1.5" opacity="0.9"/>\n'
+            )
 
         # Y-axis labels and grid lines
         y_labels_svg = ""
         num_y_ticks = 4
         for i in range(num_y_ticks + 1):
             val = max_total * i / num_y_ticks
-            y = margin_top + chart_height - (i / num_y_ticks) * chart_height
+            y = y_for(val)
             y_labels_svg += (
                 f'<text x="{margin_left - 6}" y="{y + 3}" '
                 f'text-anchor="end" font-size="9" fill="#9ca3af">'
@@ -287,8 +303,6 @@ def lambda_handler(event, context):
                     f'stroke="#374151" stroke-opacity="0.15" stroke-width="0.5"/>\n'
                 )
 
-        # Baseline
-        baseline_y = margin_top + chart_height
         y_labels_svg += (
             f'<line x1="{margin_left}" y1="{baseline_y}" '
             f'x2="{margin_left + chart_width}" y2="{baseline_y}" '
@@ -300,8 +314,8 @@ def lambda_handler(event, context):
         max_x_labels = min(6, num_buckets)
         label_step = max(1, num_buckets // max_x_labels)
         for i in range(0, num_buckets, label_step):
-            x = margin_left + i * (bar_width + bar_gap) + bar_width / 2
-            y = margin_top + chart_height + 14
+            x = x_for(i)
+            y = baseline_y + 14
             try:
                 dt = datetime.fromisoformat(sorted_buckets[i])
                 if (end_dt - start_dt).days >= 1:
@@ -331,11 +345,9 @@ def lambda_handler(event, context):
                 f'font-size="9" fill="#9ca3af">{label}</text>\n'
             )
             legend_x += len(label) * 5.5 + 22
-            # Wrap to next line if we'd overflow
             if legend_x > margin_left + chart_width - 40:
                 legend_x = margin_left
                 legend_y += 14
-                legend_height_extra = 14
 
         svg_width = margin_left + chart_width + 10
         svg_height = legend_y + 10
@@ -353,7 +365,7 @@ def lambda_handler(event, context):
                  preserveAspectRatio="xMinYMin meet"
                  style="display:block;">
                 {y_labels_svg}
-                {bars_svg}
+                {areas_svg}
                 {x_labels_svg}
                 {legend_svg}
             </svg>

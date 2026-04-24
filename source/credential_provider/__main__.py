@@ -154,7 +154,10 @@ class MultiProviderAuth:
         3. <binary_dir>/config.json (bundled distribution)
         4. ~/claude-code-with-bedrock/config.json (legacy)
         """
-        from claude_code_with_bedrock.config_paths import resolve_config_path
+        try:
+            from claude_code_with_bedrock.config_paths import resolve_config_path
+        except ImportError as e:
+            raise ValueError(f"Cannot load config path resolver: {e}") from e
 
         binary_dir = Path(__file__).parent if not getattr(sys, "frozen", False) else Path(sys.executable).parent
         config_path = resolve_config_path(binary_dir=binary_dir)

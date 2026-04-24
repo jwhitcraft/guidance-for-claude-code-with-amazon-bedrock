@@ -2,6 +2,7 @@
 # ABOUTME: Runs every 5 minutes to pre-compute metrics for dashboard performance
 
 import json
+import re
 import boto3
 import os
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,81 @@ AGGREGATION_WINDOW = 5  # minutes
 table = dynamodb.Table(METRICS_TABLE)
 quota_table = dynamodb.Table(QUOTA_TABLE) if QUOTA_TABLE else None
 policies_table = dynamodb.Table(POLICIES_TABLE) if POLICIES_TABLE else None
+
+# --- Inference profile → foundation model resolution ---
+
+_inference_profile_cache = {}
+
+_APPLICATION_PROFILE_ARN_RE = re.compile(
+    r"^arn:aws:bedrock:(?P<region>[^:]+):[^:]*:application-inference-profile/[^/]+$"
+)
+
+_FOUNDATION_MODEL_ARN_RE = re.compile(
+    r"^arn:aws:bedrock:[^:]*:[^:]*:foundation-model/(?P<model>.+)$"
+)
+
+
+def resolve_model_id(model_id):
+    """Resolve an application-inference-profile ARN to its underlying foundation model ID."""
+    if not model_id:
+        return model_id
+
+    match = _APPLICATION_PROFILE_ARN_RE.match(model_id)
+    if not match:
+        return model_id
+
+    if model_id in _inference_profile_cache:
+        return _inference_profile_cache[model_id]
+
+    region = match.group("region")
+    try:
+        bedrock = boto3.client("bedrock", region_name=region)
+        profile = bedrock.get_inference_profile(inferenceProfileIdentifier=model_id)
+        for model in profile.get("models", []):
+            model_arn = model.get("modelArn", "")
+            fm_match = _FOUNDATION_MODEL_ARN_RE.match(model_arn)
+            if fm_match:
+                resolved = fm_match.group("model")
+                _inference_profile_cache[model_id] = resolved
+                print(f"Resolved inference profile {model_id} -> {resolved}")
+                return resolved
+        print(f"No foundation model found in inference profile {model_id}")
+    except Exception as e:
+        print(f"Failed to resolve inference profile {model_id}: {str(e)}")
+
+    _inference_profile_cache[model_id] = model_id
+    return model_id
+
+
+def get_model_display_name(model_id):
+    """Convert a foundation model ID to a short display name."""
+    display = model_id.replace("us.anthropic.", "").replace("eu.anthropic.", "").replace("apac.anthropic.", "").replace("anthropic.", "")
+    lower = display.lower()
+
+    for pattern, name in [
+        ("opus-4-7", "Opus 4.7"), ("opus-4.7", "Opus 4.7"),
+        ("opus-4-6", "Opus 4.6"), ("opus-4.6", "Opus 4.6"),
+        ("opus-4-5", "Opus 4.5"), ("opus-4.5", "Opus 4.5"),
+        ("opus-4-1", "Opus 4.1"), ("opus-4.1", "Opus 4.1"),
+        ("opus-4", "Opus 4"),
+        ("sonnet-4-6", "Sonnet 4.6"), ("sonnet-4.6", "Sonnet 4.6"),
+        ("sonnet-4-5", "Sonnet 4.5"), ("sonnet-4.5", "Sonnet 4.5"),
+        ("sonnet-4", "Sonnet 4"),
+        ("sonnet-3.7", "Sonnet 3.7"), ("sonnet-3-7", "Sonnet 3.7"),
+        ("sonnet-3.5", "Sonnet 3.5"), ("sonnet-3-5", "Sonnet 3.5"),
+        ("haiku-4-5", "Haiku 4.5"), ("haiku-4.5", "Haiku 4.5"),
+        ("haiku-4", "Haiku 4"),
+        ("haiku-3.5", "Haiku 3.5"), ("haiku-3-5", "Haiku 3.5"),
+        ("haiku-3", "Haiku 3.0"),
+    ]:
+        if pattern in lower:
+            return name
+
+    for family in ["opus", "sonnet", "haiku"]:
+        if family in lower:
+            return family.capitalize()
+
+    return display.split("-")[0].capitalize()
 
 
 def lambda_handler(event, context):
@@ -640,9 +716,10 @@ def aggregate_lines_of_code(start_ms, end_ms):
 def aggregate_model_rate_metrics(start_ms, end_ms):
     """
     Query logs and bucket token/request counts by model and minute.
-    Returns dict of model -> minute -> {tokens, requests} for DynamoDB storage.
+    Resolves inference profile ARNs to friendly model display names so that
+    DynamoDB stores human-readable keys (e.g. "Sonnet 4.6") instead of raw ARNs.
+    Returns dict of display_name -> minute -> {tokens, requests}.
     """
-    # Query for all token usage with timestamps and models
     query = """
     fields @timestamp, @message
     | filter @message like /claude_code.token.usage/
@@ -652,7 +729,7 @@ def aggregate_model_rate_metrics(start_ms, end_ms):
     | sort @timestamp asc
     """
 
-    model_metrics = defaultdict(
+    raw_metrics = defaultdict(
         lambda: defaultdict(lambda: {"tokens": 0, "requests": 0})
     )
 
@@ -674,23 +751,31 @@ def aggregate_model_rate_metrics(start_ms, end_ms):
                 token_type = field["value"]
 
         if timestamp and model and tokens > 0:
-            # Parse timestamp and bucket by minute
             try:
                 dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                # Round down to minute
                 minute_dt = dt.replace(second=0, microsecond=0)
                 minute_str = minute_dt.strftime("%H:%M:%S")
 
-                # Add tokens to the minute bucket for this model
-                model_metrics[model][minute_str]["tokens"] += tokens
+                raw_metrics[model][minute_str]["tokens"] += tokens
 
-                # Count requests (only for input tokens to avoid double counting)
                 if token_type == "input":
-                    model_metrics[model][minute_str]["requests"] += 1
+                    raw_metrics[model][minute_str]["requests"] += 1
             except Exception as e:
                 print(f"Error parsing timestamp {timestamp}: {str(e)}")
 
-    return model_metrics
+    # Resolve inference profile ARNs → display names and merge duplicates
+    resolved_metrics = defaultdict(
+        lambda: defaultdict(lambda: {"tokens": 0, "requests": 0})
+    )
+    for raw_model_id, minute_data in raw_metrics.items():
+        resolved_id = resolve_model_id(raw_model_id)
+        display_name = get_model_display_name(resolved_id)
+        for minute_str, counts in minute_data.items():
+            resolved_metrics[display_name][minute_str]["tokens"] += counts["tokens"]
+            resolved_metrics[display_name][minute_str]["requests"] += counts["requests"]
+
+    print(f"Resolved {len(raw_metrics)} raw model IDs to {len(resolved_metrics)} display names")
+    return resolved_metrics
 
 
 def write_to_dynamodb(

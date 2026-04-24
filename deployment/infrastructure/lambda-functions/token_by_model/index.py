@@ -76,6 +76,8 @@ def get_model_display_name(model_id):
         return "Opus 4.7"
     elif "opus-4-6" in model_lower or "opus-4.6" in model_lower:
         return "Opus 4.6"
+    elif "opus-4-5" in model_lower or "opus-4.5" in model_lower:
+        return "Opus 4.5"
     elif "opus-4-1" in model_lower or "opus-4.1" in model_lower:
         return "Opus 4.1"
     elif "opus-4" in model_lower:
@@ -114,6 +116,7 @@ def get_model_color(model_name):
     colors = {
         "Opus 4.7": "#0d9488",  # Dark teal
         "Opus 4.6": "#14b8a6",  # Teal
+        "Opus 4.5": "#2dd4bf",  # Light teal
         "Opus 4.1": "#3b82f6",  # Blue
         "Opus 4": "#f97316",    # Orange
         "Opus": "#8b5cf6",      # Purple

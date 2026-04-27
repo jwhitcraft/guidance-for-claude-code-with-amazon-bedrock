@@ -297,7 +297,8 @@ def add_monitoring_config(mdm_config: dict, profile, console: Console) -> None:
     custom_domain = monitoring_config.get("custom_domain")
 
     if custom_domain:
-        endpoint = custom_domain.rstrip("/")
+        domain = custom_domain.replace("https://", "").replace("http://", "").rstrip("/")
+        endpoint = f"https://{domain}"
         mdm_config["otlpEndpoint"] = endpoint
         mdm_config["otlpProtocol"] = "http/protobuf"
         console.print(f"[dim]OTLP endpoint: {endpoint} (from profile custom domain)[/dim]")

@@ -130,7 +130,17 @@ class MultiProviderAuth:
             with open(config_path) as f:
                 file_config = json.load(f)
 
-            # New format with "profiles" key
+            # v2.0 per-file profile format
+            if file_config.get("schema_version") == "2.0" or (
+                "active_profile" in file_config and "profiles" not in file_config
+            ):
+                active = file_config.get("active_profile")
+                if active:
+                    self._debug_print(f"Auto-detected active profile: {active}")
+                    return active
+                return None
+
+            # Legacy monolithic format with "profiles" key
             if "profiles" in file_config:
                 profiles = list(file_config["profiles"].keys())
             else:
@@ -170,9 +180,30 @@ class MultiProviderAuth:
         with open(config_path) as f:
             file_config = json.load(f)
 
-        # Handle new config format with profiles
-        if "profiles" in file_config:
-            # New format
+        # v2.0 per-file profile format: config.json has "active_profile" and
+        # individual profiles live under ~/.ccwb/profiles/<name>.json
+        if file_config.get("schema_version") == "2.0" or (
+            "active_profile" in file_config and "profiles" not in file_config
+        ):
+            profiles_dir = Path(file_config.get("profiles_dir", str(config_path.parent / "profiles")))
+            profile_file = profiles_dir / f"{self.profile}.json"
+            if not profile_file.is_file():
+                raise ValueError(
+                    f"Profile '{self.profile}' not found at {profile_file}"
+                )
+            with open(profile_file) as pf:
+                profile_config = json.load(pf)
+
+            profile_config["provider_domain"] = profile_config.get("provider_domain", profile_config.get("okta_domain"))
+            profile_config["client_id"] = profile_config.get("client_id", profile_config.get("okta_client_id"))
+
+            if "identity_pool_name" in profile_config and "federated_role_arn" not in profile_config:
+                profile_config["identity_pool_id"] = profile_config["identity_pool_name"]
+
+            profile_config["credential_storage"] = profile_config.get("credential_storage", "session")
+
+        elif "profiles" in file_config:
+            # Legacy monolithic format: all profiles in one file
             profiles = file_config.get("profiles", {})
             if self.profile not in profiles:
                 raise ValueError(f"Profile '{self.profile}' not found in configuration")

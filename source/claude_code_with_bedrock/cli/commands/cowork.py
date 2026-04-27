@@ -12,6 +12,7 @@ from rich.panel import Panel
 
 from claude_code_with_bedrock.cli.utils.cowork_3p import (
     add_monitoring_config,
+    build_credential_helper_binary,
     build_mdm_config,
     derive_model_aliases,
     generate_credential_helper_wrapper,
@@ -129,9 +130,22 @@ class CoworkGenerateCommand(Command):
             credential_helper_ttl=credential_helper_ttl,
         )
 
-        # Generate the credential helper script CoWork will call
-        wrapper_path = generate_credential_helper_wrapper(profile_name, bedrock_region)
-        console.print(f"[dim]Credential helper: {wrapper_path}[/dim]")
+        # Generate the credential helper: write source then compile binary
+        generate_credential_helper_wrapper(profile_name, bedrock_region)
+        install_dir = Path("~/claude-code-with-bedrock").expanduser()
+        console.print("[cyan]Building credential helper binary...[/cyan]")
+        try:
+            binary_path = build_credential_helper_binary(
+                profile_name=profile_name,
+                bedrock_region=bedrock_region,
+                output_dir=install_dir,
+            )
+            console.print(f"[dim]Credential helper: {binary_path}[/dim]")
+        except Exception as e:
+            console.print(
+                f"[yellow]Warning: Could not compile credential helper: {e}[/yellow]\n"
+                f"[dim]Falling back to Python script at {install_dir / f'credential-helper-{profile_name}'}[/dim]"
+            )
 
         # Add monitoring OTLP endpoint if available
         add_monitoring_config(mdm_config, profile, console)

@@ -2494,6 +2494,7 @@ Available metrics include:
         """
         from claude_code_with_bedrock.cli.utils.cowork_3p import (
             add_monitoring_config,
+            build_credential_helper_binary,
             build_mdm_config,
             derive_model_aliases,
             generate_all,
@@ -2512,7 +2513,26 @@ Available metrics include:
                 profile_name=profile_name,
             )
 
+            # Write Python source as fallback, then compile a native binary
             generate_credential_helper_wrapper(profile_name, bedrock_region)
+
+            install_dir = Path("~/claude-code-with-bedrock").expanduser()
+            verbose = self.option("build-verbose")
+            console.print("[cyan]Building credential helper binary...[/cyan]")
+            try:
+                binary_path = build_credential_helper_binary(
+                    profile_name=profile_name,
+                    bedrock_region=bedrock_region,
+                    output_dir=install_dir,
+                    verbose=verbose,
+                )
+                console.print(f"[green]✓ Credential helper built: {binary_path}[/green]")
+            except Exception as e:
+                console.print(
+                    f"[yellow]Warning: Could not compile credential helper binary: {e}[/yellow]\n"
+                    f"[dim]Falling back to Python script at ~/claude-code-with-bedrock/credential-helper-{profile_name}[/dim]"
+                )
+
             add_monitoring_config(mdm_config, profile, console)
             generate_all(output_dir, mdm_config, console)
 

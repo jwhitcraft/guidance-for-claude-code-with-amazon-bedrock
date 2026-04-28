@@ -7,6 +7,7 @@ Supports multiple OIDC providers for Bedrock access
 """
 
 import base64
+import configparser
 import errno
 import hashlib
 import html as html_module
@@ -16,6 +17,7 @@ import platform
 import re
 import secrets
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -31,6 +33,7 @@ import keyring
 import requests
 from botocore import UNSIGNED
 from botocore.config import Config
+from botocore.exceptions import TokenRetrievalError, UnauthorizedSSOTokenError
 
 # No longer using file locks - using port-based locking instead
 
@@ -1911,20 +1914,60 @@ class MultiProviderAuth:
             self._debug_print(f"Silent refresh failed, will require browser auth: {e}")
             return None, None, None
 
+    def _resolve_sso_session_name(self):
+        """Read ~/.aws/config and return the sso_session name for this profile."""
+        aws_config_path = Path.home() / ".aws" / "config"
+        if not aws_config_path.is_file():
+            return None
+        parser = configparser.ConfigParser()
+        parser.read(str(aws_config_path))
+        section = f"profile {self.profile}"
+        if parser.has_section(section) and parser.has_option(section, "sso_session"):
+            return parser.get(section, "sso_session")
+        return None
+
+    def _run_sso_login(self):
+        """Run 'aws sso login' for this profile's sso_session (or profile as fallback)."""
+        sso_session = self._resolve_sso_session_name()
+        if sso_session:
+            cmd = ["aws", "sso", "login", "--sso-session", sso_session]
+            self._debug_print(f"Running: {' '.join(cmd)}")
+        else:
+            cmd = ["aws", "sso", "login", "--profile", self.profile]
+            self._debug_print(f"No sso_session found, running: {' '.join(cmd)}")
+        print(f"SSO token expired — launching 'aws sso login' for profile '{self.profile}'...",
+              file=sys.stderr)
+        result = subprocess.run(cmd, check=False)
+        return result.returncode == 0
+
     def _run_passthrough(self):
         """Emit credentials from the ambient AWS credential chain (Identity Center, env vars, instance profile).
 
         Used when sso_enabled=false — no OIDC browser flow, just surface whatever
         credentials boto3 already has resolved for the caller.
         """
-        session = boto3.Session()
+        session = boto3.Session(profile_name=self.profile)
         creds = session.get_credentials()
         if creds is None:
             print("Error: sso_enabled=false but no ambient AWS credentials found. "
                   "Log in via 'aws sso login' first.", file=sys.stderr)
             return 1
 
-        frozen = creds.get_frozen_credentials()
+        try:
+            frozen = creds.get_frozen_credentials()
+        except (TokenRetrievalError, UnauthorizedSSOTokenError) as e:
+            self._debug_print(f"SSO token expired or invalid: {e}")
+            if not self._run_sso_login():
+                print("Error: 'aws sso login' failed. Please log in manually and retry.",
+                      file=sys.stderr)
+                return 1
+            session = boto3.Session(profile_name=self.profile)
+            creds = session.get_credentials()
+            if creds is None:
+                print("Error: still no credentials after SSO login.", file=sys.stderr)
+                return 1
+            frozen = creds.get_frozen_credentials()
+
         output = {
             "Version": 1,
             "AccessKeyId": frozen.access_key,

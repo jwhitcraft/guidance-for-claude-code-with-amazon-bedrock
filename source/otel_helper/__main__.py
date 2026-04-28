@@ -233,12 +233,29 @@ def format_as_headers_dict(attributes):
     return headers
 
 
+def get_active_profile():
+    """Resolve the active profile name for cache keying and credential-process invocation."""
+    profile = os.environ.get("AWS_PROFILE")
+    if not profile:
+        try:
+            try:
+                from claude_code_with_bedrock.config_paths import resolve_config_path
+                config_path = resolve_config_path()
+            except ImportError:
+                config_path = Path.home() / ".ccwb" / "config.json"
+            with open(config_path) as f:
+                file_config = json.load(f)
+            profile = file_config.get("active_profile")
+        except Exception:
+            pass
+    return profile or "ClaudeCode"
+
+
 def get_cache_path():
     """Get the path to the OTEL headers cache file."""
     cache_dir = Path.home() / ".claude-code-session"
     cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
-    return cache_dir / f"{profile}-otel-headers.json"
+    return cache_dir / f"{get_active_profile()}-otel-headers.json"
 
 
 def read_cached_headers():
@@ -316,9 +333,7 @@ def get_token_via_credential_process():
         logger.warning("Credential process not found on $PATH or in ~/claude-code-with-bedrock/")
         return None
 
-    # Get profile name from AWS_PROFILE environment variable (set by Claude Code from settings.json)
-    # Fall back to "ClaudeCode" for backward compatibility
-    profile = os.environ.get("AWS_PROFILE", "ClaudeCode")
+    profile = get_active_profile()
 
     try:
         # Run credential process with --profile flag and --get-monitoring-token flag

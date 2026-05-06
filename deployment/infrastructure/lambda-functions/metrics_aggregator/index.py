@@ -38,6 +38,8 @@ _APPLICATION_PROFILE_ARN_RE = re.compile(
     r"^arn:aws:bedrock:(?P<region>[^:]+):[^:]*:application-inference-profile/[^/]+$"
 )
 
+_THROUGHPUT_SUFFIX_RE = re.compile(r"\[\d+m\]$")
+
 _FOUNDATION_MODEL_ARN_RE = re.compile(
     r"^arn:aws:bedrock:[^:]*:[^:]*:foundation-model/(?P<model>.+)$"
 )
@@ -65,6 +67,8 @@ def resolve_model_id(model_id):
     """Resolve an application-inference-profile ARN to its underlying foundation model ID."""
     if not model_id:
         return model_id
+
+    model_id = _THROUGHPUT_SUFFIX_RE.sub("", model_id)
 
     match = _APPLICATION_PROFILE_ARN_RE.match(model_id)
     if not match:
